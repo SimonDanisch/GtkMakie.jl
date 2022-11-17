@@ -1,6 +1,12 @@
 
-function GLMakie.resize_native!(::Gtk4.GtkWindowLeaf, resolution...)
-    # TODO implement
+function GLMakie.resize_native!(window::Gtk4.GtkWindowLeaf, resolution...)
+    oldsize = size(window[])
+    #retina_scale = retina_scaling_factor(window)
+    w, h = resolution #./ retina_scale
+    if oldsize == (w, h)
+        return
+    end
+    Gtk4.G_.set_default_size(window, w, h)
 end
 
 function realizecb(a)
@@ -16,10 +22,21 @@ const GTKGLWindow = Gtk4.GtkGLAreaLeaf
 
 const screens = Dict{Ptr{Gtk4.GtkGLArea}, GLMakie.Screen}();
 
-GLMakie.framebuffer_size(::Gtk4.GtkWindowLeaf) = (800, 800)
+GLMakie.framebuffer_size(w::Gtk4.GtkWindowLeaf) = size(w[])
 GLMakie.isopen(::Gtk4.GtkWindowLeaf) = true
 GLMakie.to_native(w::Gtk4.GtkWindowLeaf) = w[]
 GLMakie.to_native(gl::GTKGLWindow) = gl
+
+GLMakie.was_destroyed(nw::Gtk4.GtkWindowLeaf) = nw.handle == C_NULL || Gtk4.G_.in_destruction(nw)
+function GLMakie.set_screen_visibility!(nw::Gtk4.GtkWindowLeaf, b::Bool)
+    if b
+        Gtk4.show(nw)
+    else
+        Gtk4.hide(nw)
+    end
+end
+
+default_ID = Ref{Int}()
 
 Gtk4.@guarded Cint(false) function refreshwindowcb(a, c, user_data)
     #@async println("refreshwindow")
@@ -27,6 +44,7 @@ Gtk4.@guarded Cint(false) function refreshwindowcb(a, c, user_data)
         @async println("renderin'")
         screen = screens[Ptr{Gtk4.GtkGLArea}(a)]
         screen.render_tick[] = nothing
+        default_ID[] = glGetIntegerv(GL_FRAMEBUFFER_BINDING)
         GLMakie.render_frame(screen)
     end
     #glClearColor(0.0, 0.0, 0.5, 1.0)
@@ -47,10 +65,10 @@ function GTKScreen(;
     )
     config = Makie.merge_screen_config(GLMakie.ScreenConfig, screen_config)
     window, glarea = try
-        w = Gtk4.GtkWindow(config.title)
+        w = Gtk4.GtkWindow(config.title, resolution[1], resolution[2])
         glarea = Gtk4.GtkGLArea()
-        glarea.has_stencil_buffer = true
-        glarea.has_depth_buffer = true
+        #glarea.has_stencil_buffer = true
+        #glarea.has_depth_buffer = true
         w, glarea
     catch e
         @warn("""
@@ -76,7 +94,10 @@ function GTKScreen(;
         config.ssao ? ssao_postprocessor(fb, shader_cache) : empty_postprocessor(),
         OIT_postprocessor(fb, shader_cache),
         config.fxaa ? fxaa_postprocessor(fb, shader_cache) : empty_postprocessor(),
-        to_screen_postprocessor(fb, shader_cache)
+        # Instead of being hard-coded as 2, this "default_ID" should be found with
+        # `default_ID = glGetIntegerv(GL_FRAMEBUFFER_BINDING)` near the beginning of
+        # `render_frame`
+        to_screen_postprocessor(fb, shader_cache, 2)
     ]
 
     screen = GLMakie.Screen(
